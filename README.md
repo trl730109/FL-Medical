@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # NIID-Bench
 
 [![paper](https://img.shields.io/badge/PAPER-arXiv-yellowgreen?style=for-the-badge)](https://arxiv.org/pdf/2102.02079.pdf)
@@ -231,3 +232,6 @@ If you find this repository useful, please cite our paper:
       year={2022}
 }
 ```
+=======
+# FL-Medical
+>>>>>>> 4464c939a901336b5ec2f65cd9ed5126a49c46c1

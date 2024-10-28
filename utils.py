@@ -14,7 +14,7 @@ import copy
 from model import *
 from datasets import MNIST_truncated, CIFAR10_truncated, CIFAR100_truncated, ImageFolder_custom, SVHN_custom, FashionMNIST_truncated, CustomTensorDataset, CelebA_custom, FEMNIST, Generated, genData
 from math import sqrt
-
+from pathlib import Path
 import torch.nn as nn
 
 import torch.optim as optim
@@ -175,6 +175,9 @@ def record_net_data_stats(y_train, net_dataidx_map, logdir):
     logger.info('Data statistics: %s' % str(net_cls_counts))
 
     return net_cls_counts
+
+# def partition_liver_data(dataset, datadir, logdir, partition, n_parties, beta=0.4):
+#     X_train, y_train, X_test, y_test = load_liver_data(datadir)
 
 def partition_data(dataset, datadir, logdir, partition, n_parties, beta=0.4):
     #np.random.seed(2020)
@@ -664,6 +667,86 @@ class AddGaussianNoise(object):
     def __repr__(self):
         return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
 
+class MyDataset(Dataset):
+    def __init__(self, root_dir, ann_txt_dir, transform=None):
+        '''
+        :param filename: 数据文件TXT：格式：imge_name.jpg label1_id labe2_id
+        :param image_dir: 图片路径：image_dir+imge_name.jpg构成图片的完整路径
+        '''
+        self.ann_txt_dir = ann_txt_dir
+        self.root_dir = root_dir
+
+        self.imgs_labels_dict = self.load_annotations()  # 返回字典，图片名为key，图片label为value
+        # dataloader到时候会在这里取数据,必须是list类型
+        self.imgs = [Path(os.path.join(self.root_dir, img)).as_posix() for img in list(self.imgs_labels_dict.keys())]  # 一个[包含图片路径]的list
+        self.labels = [label for label in list(self.imgs_labels_dict.values())]  # [图像对应的labels] 的list
+        print(self.imgs)
+        # 相关预处理的初始化
+        # 把shape=(H,W,C)的像素值范围为[0, 255]的PIL.Image或者numpy.ndarray数据
+        # 转换成shape=(C,H,W)的像素数据，并且被归一化到[0.0, 1.0]的torch.FloatTensor类型。
+        self.transform = transform
+
+    # __getitem__会执行 batch_size次，__getitem__返回的数据是给模型的
+    def __getitem__(self, index): #图像和标签在当前list的索引，每次调用index是随机值，一个batch里的数据是随机打乱的
+        image = self.imgs[index]
+        label = self.labels[index]  # 得到单张图片和相应的标签（此处都是image都是文件目录）
+        image = Image.open(image).convert('RGB')  # 得到图片数据
+        # image = read_image(image)  # tensor类型
+
+        if self.transform is not None:
+            image = self.transform(image)  # 对图片进行某些变换
+        label = torch.from_numpy(np.array(label))  # 转回Tensor格式
+        # label = torch.tensor(label)  # 把图片标签也变成tensor类型
+        return image, label
+
+    def __len__(self):
+        return len(self.imgs)
+
+    def load_annotations(self):
+        imgs_labels_dict = {}
+        with open(self.ann_txt_dir) as f:
+            samples = [x.strip().split(' ') for x in f.readlines()]  # rstrip：用来去除结尾字符、空白符(包括\n、\r、\t、' '，即：换行、回车、制表符、空格)
+            for filename, gt_label in samples:
+                imgs_labels_dict[filename] = np.array(gt_label, dtype=np.int64)  # 将图片名和label组合成字典数据
+        return imgs_labels_dict
+
+
+def get_liver_dataloader(train_bs, test_bs, hospital_name = None):
+    data_transform = {
+        "train": transforms.Compose([transforms.Resize(224),
+                                     # transforms.CenterCrop(224),
+                                     transforms.RandomHorizontalFlip(),
+                                     transforms.ToTensor(),
+                                     transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])]),
+        "val": transforms.Compose([transforms.Resize(224),  # 长宽比例不变，将最小边缩放到256
+                                   # transforms.CenterCrop(224),  # 再中心裁减一个224*224大小的图片
+                                   transforms.ToTensor(),
+                                   transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])}  # [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+    if hospital_name != None:
+        ann_txt_dir_train = '/mnt/raid/tangzichen/Liver/train_AP_'+hospital_name+'.txt'
+        ann_txt_dir_val = '/mnt/raid/tangzichen/Liver/val_AP_D.txt'+hospital_name+'.txt'
+        # root_dir = os.getcwd()
+        root_dir = "/mnt/raid/tangzichen/Liver/"
+        image_dir_name = 'Images_AP_all_'+hospital_name
+    
+    train_dataset = MyDataset(root_dir = root_dir, ann_txt_dir = ann_txt_dir_train, transform=data_transform["train"])
+    train_num = len(train_dataset)
+    print('train_num:',train_num)
+    train_loader = torch.utils.data.DataLoader(train_dataset,batch_size=train_bs, shuffle=True, num_workers=8) #dataloader的标准输入
+
+    validate_dataset = MyDataset(root_dir = root_dir, ann_txt_dir = ann_txt_dir_val, transform=data_transform["val"])
+    val_num = len(validate_dataset)
+    validate_loader = torch.utils.data.DataLoader(validate_dataset,batch_size=test_bs, shuffle=False,num_workers=8)
+    print("using {} images for training, {} images for validation.".format(train_num, val_num))
+    
+    # train_ds = dl_obj(datadir, dataidxs=dataidxs, train=True, transform=transform_train, download=True)
+    # test_ds = dl_obj(datadir, train=False, transform=transform_test, download=True)
+
+    # train_dl = data.DataLoader(dataset=train_ds, batch_size=train_bs, shuffle=True, drop_last=False)
+    # test_dl = data.DataLoader(dataset=test_ds, batch_size=test_bs, shuffle=False, drop_last=False)
+
+    return train_loader, validate_loader, train_dataset, validate_dataset
+
 def get_dataloader(dataset, datadir, train_bs, test_bs, dataidxs=None, noise_level=0, net_id=None, total=0):
     if dataset in ('mnist', 'femnist', 'fmnist', 'cifar10', 'svhn', 'generated', 'covtype', 'a9a', 'rcv1', 'SUSY', 'cifar100', 'tinyimagenet'):
         if dataset == 'mnist':
@@ -780,7 +863,6 @@ def get_dataloader(dataset, datadir, train_bs, test_bs, dataidxs=None, noise_lev
         test_dl = data.DataLoader(dataset=test_ds, batch_size=test_bs, shuffle=False, drop_last=False)
 
     return train_dl, test_dl, train_ds, test_ds
-
 
 def weights_init(m):
     """

@@ -345,3 +345,4 @@ def ResNet50_cifar10(**kwargs):
         progress (bool): If True, displays a progress bar of the download to stderr
     """
     return ResNetCifar10(Bottleneck, [3, 4, 6, 3], **kwargs)
+

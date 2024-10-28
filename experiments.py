@@ -21,6 +21,7 @@ from model import *
 from utils import *
 from vggmodel import *
 from resnetcifar import *
+from resnet_liver import *
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -74,7 +75,7 @@ def init_nets(net_configs, dropout_p, n_parties, args):
         n_classes = 62
     elif args.dataset == 'emnist':
         n_classes = 47
-    elif args.dataset in {'a9a', 'covtype', 'rcv1', 'SUSY'}:
+    elif args.dataset in {'a9a', 'covtype', 'rcv1', 'SUSY', 'Liver'}:
         n_classes = 2
     if args.use_projection_head:
         add = ""
@@ -132,6 +133,21 @@ def init_nets(net_configs, dropout_p, n_parties, args):
                         net = ModerateCNN(output_dim=2)
                 elif args.model == "resnet":
                     net = ResNet50_cifar10()
+                elif args.dataset == 'Liver' and args.model == 'resnet':
+                    net = resnet50()
+                    model_weight_path = "/mnt/raid/tangzichen/Liver/resnet50-pre.pth"
+                    missing_keys, unexpected_keys = net.load_state_dict(torch.load(model_weight_path), strict=False)
+
+                    # 冻结部分权重
+                    for param in net.parameters():  #对于模型的每个权重，使其不进行反向传播，即固定参数
+                        param.requires_grad = False
+                    for param in net.fc.parameters(): # 但是参数全部固定了，也没法进行学习，所以我们不固定最后一层，即全连接层fc
+                        param.requires_grad = True
+
+                    # change fc layer structure
+                    in_channel = net.fc.in_features # 输入特征矩阵的深度。net.fc是所定义网络的全连接层
+                    net.fc = nn.Linear(in_channel, 2)  # 类别个数
+                    # net.to(device)
                 elif args.model == "vgg16":
                     net = vgg16()
                 else:
@@ -222,336 +238,336 @@ def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args_o
 
 
 
-def train_net_fedprox(net_id, net, global_net, train_dataloader, test_dataloader, epochs, lr, args_optimizer, mu, device="cpu"):
-    logger.info('Training network %s' % str(net_id))
-    logger.info('n_training: %d' % len(train_dataloader))
-    logger.info('n_test: %d' % len(test_dataloader))
+# def train_net_fedprox(net_id, net, global_net, train_dataloader, test_dataloader, epochs, lr, args_optimizer, mu, device="cpu"):
+#     logger.info('Training network %s' % str(net_id))
+#     logger.info('n_training: %d' % len(train_dataloader))
+#     logger.info('n_test: %d' % len(test_dataloader))
 
-    train_acc = compute_accuracy(net, train_dataloader, device=device)
-    test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
+#     train_acc = compute_accuracy(net, train_dataloader, device=device)
+#     test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
 
-    logger.info('>> Pre-Training Training accuracy: {}'.format(train_acc))
-    logger.info('>> Pre-Training Test accuracy: {}'.format(test_acc))
-
+#     logger.info('>> Pre-Training Training accuracy: {}'.format(train_acc))
+#     logger.info('>> Pre-Training Test accuracy: {}'.format(test_acc))
+
 
-    if args_optimizer == 'adam':
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg)
-    elif args_optimizer == 'amsgrad':
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
-                               amsgrad=True)
-    elif args_optimizer == 'sgd':
-        optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=args.rho, weight_decay=args.reg)
+#     if args_optimizer == 'adam':
+#         optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg)
+#     elif args_optimizer == 'amsgrad':
+#         optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
+#                                amsgrad=True)
+#     elif args_optimizer == 'sgd':
+#         optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=args.rho, weight_decay=args.reg)
 
-    criterion = nn.CrossEntropyLoss().to(device)
-
-    cnt = 0
-    # mu = 0.001
-    global_weight_collector = list(global_net.to(device).parameters())
-
-    for epoch in range(epochs):
-        epoch_loss_collector = []
-        for batch_idx, (x, target) in enumerate(train_dataloader):
-            x, target = x.to(device), target.to(device)
+#     criterion = nn.CrossEntropyLoss().to(device)
+
+#     cnt = 0
+#     # mu = 0.001
+#     global_weight_collector = list(global_net.to(device).parameters())
+
+#     for epoch in range(epochs):
+#         epoch_loss_collector = []
+#         for batch_idx, (x, target) in enumerate(train_dataloader):
+#             x, target = x.to(device), target.to(device)
 
-            optimizer.zero_grad()
-            x.requires_grad = True
-            target.requires_grad = False
-            target = target.long()
+#             optimizer.zero_grad()
+#             x.requires_grad = True
+#             target.requires_grad = False
+#             target = target.long()
 
-            out = net(x)
-            loss = criterion(out, target)
+#             out = net(x)
+#             loss = criterion(out, target)
 
-            #for fedprox
-            fed_prox_reg = 0.0
-            for param_index, param in enumerate(net.parameters()):
-                fed_prox_reg += ((mu / 2) * torch.norm((param - global_weight_collector[param_index]))**2)
-            loss += fed_prox_reg
+#             #for fedprox
+#             fed_prox_reg = 0.0
+#             for param_index, param in enumerate(net.parameters()):
+#                 fed_prox_reg += ((mu / 2) * torch.norm((param - global_weight_collector[param_index]))**2)
+#             loss += fed_prox_reg
 
 
-            loss.backward()
-            optimizer.step()
+#             loss.backward()
+#             optimizer.step()
 
-            cnt += 1
-            epoch_loss_collector.append(loss.item())
+#             cnt += 1
+#             epoch_loss_collector.append(loss.item())
 
-        epoch_loss = sum(epoch_loss_collector) / len(epoch_loss_collector)
-        logger.info('Epoch: %d Loss: %f' % (epoch, epoch_loss))
+#         epoch_loss = sum(epoch_loss_collector) / len(epoch_loss_collector)
+#         logger.info('Epoch: %d Loss: %f' % (epoch, epoch_loss))
 
-        # if epoch % 10 == 0:
-        #     train_acc = compute_accuracy(net, train_dataloader, device=device)
-        #     test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
-        #
-        #     logger.info('>> Training accuracy: %f' % train_acc)
-        #     logger.info('>> Test accuracy: %f' % test_acc)
+#         # if epoch % 10 == 0:
+#         #     train_acc = compute_accuracy(net, train_dataloader, device=device)
+#         #     test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
+#         #
+#         #     logger.info('>> Training accuracy: %f' % train_acc)
+#         #     logger.info('>> Test accuracy: %f' % test_acc)
 
-    train_acc = compute_accuracy(net, train_dataloader, device=device)
-    test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
+#     train_acc = compute_accuracy(net, train_dataloader, device=device)
+#     test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
 
-    logger.info('>> Training accuracy: %f' % train_acc)
-    logger.info('>> Test accuracy: %f' % test_acc)
+#     logger.info('>> Training accuracy: %f' % train_acc)
+#     logger.info('>> Test accuracy: %f' % test_acc)
 
-    net.to('cpu')
-    logger.info(' ** Training complete **')
-    return train_acc, test_acc
+#     net.to('cpu')
+#     logger.info(' ** Training complete **')
+#     return train_acc, test_acc
 
-def train_net_scaffold(net_id, net, global_model, c_local, c_global, train_dataloader, test_dataloader, epochs, lr, args_optimizer, device="cpu"):
-    logger.info('Training network %s' % str(net_id))
+# def train_net_scaffold(net_id, net, global_model, c_local, c_global, train_dataloader, test_dataloader, epochs, lr, args_optimizer, device="cpu"):
+#     logger.info('Training network %s' % str(net_id))
 
-    train_acc = compute_accuracy(net, train_dataloader, device=device)
-    test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
+#     train_acc = compute_accuracy(net, train_dataloader, device=device)
+#     test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
 
-    logger.info('>> Pre-Training Training accuracy: {}'.format(train_acc))
-    logger.info('>> Pre-Training Test accuracy: {}'.format(test_acc))
+#     logger.info('>> Pre-Training Training accuracy: {}'.format(train_acc))
+#     logger.info('>> Pre-Training Test accuracy: {}'.format(test_acc))
 
-    if args_optimizer == 'adam':
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg)
-    elif args_optimizer == 'amsgrad':
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
-                               amsgrad=True)
-    elif args_optimizer == 'sgd':
-        optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=args.rho, weight_decay=args.reg)
-    criterion = nn.CrossEntropyLoss().to(device)
+#     if args_optimizer == 'adam':
+#         optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg)
+#     elif args_optimizer == 'amsgrad':
+#         optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
+#                                amsgrad=True)
+#     elif args_optimizer == 'sgd':
+#         optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=args.rho, weight_decay=args.reg)
+#     criterion = nn.CrossEntropyLoss().to(device)
 
-    cnt = 0
-    if type(train_dataloader) == type([1]):
-        pass
-    else:
-        train_dataloader = [train_dataloader]
+#     cnt = 0
+#     if type(train_dataloader) == type([1]):
+#         pass
+#     else:
+#         train_dataloader = [train_dataloader]
 
-    #writer = SummaryWriter()
+#     #writer = SummaryWriter()
 
-    c_local.to(device)
-    c_global.to(device)
-    global_model.to(device)
+#     c_local.to(device)
+#     c_global.to(device)
+#     global_model.to(device)
 
-    c_global_para = c_global.state_dict()
-    c_local_para = c_local.state_dict()
+#     c_global_para = c_global.state_dict()
+#     c_local_para = c_local.state_dict()
 
-    for epoch in range(epochs):
-        epoch_loss_collector = []
-        for tmp in train_dataloader:
-            for batch_idx, (x, target) in enumerate(tmp):
-                x, target = x.to(device), target.to(device)
+#     for epoch in range(epochs):
+#         epoch_loss_collector = []
+#         for tmp in train_dataloader:
+#             for batch_idx, (x, target) in enumerate(tmp):
+#                 x, target = x.to(device), target.to(device)
 
-                optimizer.zero_grad()
-                x.requires_grad = True
-                target.requires_grad = False
-                target = target.long()
+#                 optimizer.zero_grad()
+#                 x.requires_grad = True
+#                 target.requires_grad = False
+#                 target = target.long()
 
-                out = net(x)
-                loss = criterion(out, target)
+#                 out = net(x)
+#                 loss = criterion(out, target)
 
-                loss.backward()
-                optimizer.step()
+#                 loss.backward()
+#                 optimizer.step()
 
-                net_para = net.state_dict()
-                for key in net_para:
-                    net_para[key] = net_para[key] - args.lr * (c_global_para[key] - c_local_para[key])
-                net.load_state_dict(net_para)
+#                 net_para = net.state_dict()
+#                 for key in net_para:
+#                     net_para[key] = net_para[key] - args.lr * (c_global_para[key] - c_local_para[key])
+#                 net.load_state_dict(net_para)
 
-                cnt += 1
-                epoch_loss_collector.append(loss.item())
+#                 cnt += 1
+#                 epoch_loss_collector.append(loss.item())
 
 
-        epoch_loss = sum(epoch_loss_collector) / len(epoch_loss_collector)
-        logger.info('Epoch: %d Loss: %f' % (epoch, epoch_loss))
+#         epoch_loss = sum(epoch_loss_collector) / len(epoch_loss_collector)
+#         logger.info('Epoch: %d Loss: %f' % (epoch, epoch_loss))
 
-    c_new_para = c_local.state_dict()
-    c_delta_para = copy.deepcopy(c_local.state_dict())
-    global_model_para = global_model.state_dict()
-    net_para = net.state_dict()
-    for key in net_para:
-        c_new_para[key] = c_new_para[key] - c_global_para[key] + (global_model_para[key] - net_para[key]) / (cnt * args.lr)
-        c_delta_para[key] = c_new_para[key] - c_local_para[key]
-    c_local.load_state_dict(c_new_para)
+#     c_new_para = c_local.state_dict()
+#     c_delta_para = copy.deepcopy(c_local.state_dict())
+#     global_model_para = global_model.state_dict()
+#     net_para = net.state_dict()
+#     for key in net_para:
+#         c_new_para[key] = c_new_para[key] - c_global_para[key] + (global_model_para[key] - net_para[key]) / (cnt * args.lr)
+#         c_delta_para[key] = c_new_para[key] - c_local_para[key]
+#     c_local.load_state_dict(c_new_para)
 
 
-    train_acc = compute_accuracy(net, train_dataloader, device=device)
-    test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
+#     train_acc = compute_accuracy(net, train_dataloader, device=device)
+#     test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
 
-    logger.info('>> Training accuracy: %f' % train_acc)
-    logger.info('>> Test accuracy: %f' % test_acc)
+#     logger.info('>> Training accuracy: %f' % train_acc)
+#     logger.info('>> Test accuracy: %f' % test_acc)
 
-    net.to('cpu')
-    logger.info(' ** Training complete **')
-    return train_acc, test_acc, c_delta_para
+#     net.to('cpu')
+#     logger.info(' ** Training complete **')
+#     return train_acc, test_acc, c_delta_para
 
-def train_net_fednova(net_id, net, global_model, train_dataloader, test_dataloader, epochs, lr, args_optimizer, device="cpu"):
-    logger.info('Training network %s' % str(net_id))
+# def train_net_fednova(net_id, net, global_model, train_dataloader, test_dataloader, epochs, lr, args_optimizer, device="cpu"):
+#     logger.info('Training network %s' % str(net_id))
 
-    train_acc = compute_accuracy(net, train_dataloader, device=device)
-    test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
+#     train_acc = compute_accuracy(net, train_dataloader, device=device)
+#     test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
 
-    logger.info('>> Pre-Training Training accuracy: {}'.format(train_acc))
-    logger.info('>> Pre-Training Test accuracy: {}'.format(test_acc))
+#     logger.info('>> Pre-Training Training accuracy: {}'.format(train_acc))
+#     logger.info('>> Pre-Training Test accuracy: {}'.format(test_acc))
 
-    optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=args.rho, weight_decay=args.reg)
-    criterion = nn.CrossEntropyLoss().to(device)
+#     optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=args.rho, weight_decay=args.reg)
+#     criterion = nn.CrossEntropyLoss().to(device)
 
-    if type(train_dataloader) == type([1]):
-        pass
-    else:
-        train_dataloader = [train_dataloader]
+#     if type(train_dataloader) == type([1]):
+#         pass
+#     else:
+#         train_dataloader = [train_dataloader]
 
-    #writer = SummaryWriter()
+#     #writer = SummaryWriter()
 
 
-    tau = 0
+#     tau = 0
 
-    for epoch in range(epochs):
-        epoch_loss_collector = []
-        for tmp in train_dataloader:
-            for batch_idx, (x, target) in enumerate(tmp):
-                x, target = x.to(device), target.to(device)
+#     for epoch in range(epochs):
+#         epoch_loss_collector = []
+#         for tmp in train_dataloader:
+#             for batch_idx, (x, target) in enumerate(tmp):
+#                 x, target = x.to(device), target.to(device)
 
-                optimizer.zero_grad()
-                x.requires_grad = True
-                target.requires_grad = False
-                target = target.long()
+#                 optimizer.zero_grad()
+#                 x.requires_grad = True
+#                 target.requires_grad = False
+#                 target = target.long()
 
-                out = net(x)
-                loss = criterion(out, target)
-
-                loss.backward()
-                optimizer.step()
+#                 out = net(x)
+#                 loss = criterion(out, target)
+
+#                 loss.backward()
+#                 optimizer.step()
 
-                tau = tau + 1
+#                 tau = tau + 1
 
-                epoch_loss_collector.append(loss.item())
+#                 epoch_loss_collector.append(loss.item())
 
 
-        epoch_loss = sum(epoch_loss_collector) / len(epoch_loss_collector)
-        logger.info('Epoch: %d Loss: %f' % (epoch, epoch_loss))
+#         epoch_loss = sum(epoch_loss_collector) / len(epoch_loss_collector)
+#         logger.info('Epoch: %d Loss: %f' % (epoch, epoch_loss))
 
-    global_model.to(device)
-    a_i = (tau - args.rho * (1 - pow(args.rho, tau)) / (1 - args.rho)) / (1 - args.rho)
-    global_model.to(device)
-    global_model_para = global_model.state_dict()
-    net_para = net.state_dict()
-    norm_grad = copy.deepcopy(global_model.state_dict())
-    for key in norm_grad:
-        #norm_grad[key] = (global_model_para[key] - net_para[key]) / a_i
-        norm_grad[key] = torch.true_divide(global_model_para[key]-net_para[key], a_i)
-    train_acc = compute_accuracy(net, train_dataloader, device=device)
-    test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
+#     global_model.to(device)
+#     a_i = (tau - args.rho * (1 - pow(args.rho, tau)) / (1 - args.rho)) / (1 - args.rho)
+#     global_model.to(device)
+#     global_model_para = global_model.state_dict()
+#     net_para = net.state_dict()
+#     norm_grad = copy.deepcopy(global_model.state_dict())
+#     for key in norm_grad:
+#         #norm_grad[key] = (global_model_para[key] - net_para[key]) / a_i
+#         norm_grad[key] = torch.true_divide(global_model_para[key]-net_para[key], a_i)
+#     train_acc = compute_accuracy(net, train_dataloader, device=device)
+#     test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
 
-    logger.info('>> Training accuracy: %f' % train_acc)
-    logger.info('>> Test accuracy: %f' % test_acc)
+#     logger.info('>> Training accuracy: %f' % train_acc)
+#     logger.info('>> Test accuracy: %f' % test_acc)
 
-    net.to('cpu')
-    logger.info(' ** Training complete **')
-    return train_acc, test_acc, a_i, norm_grad
+#     net.to('cpu')
+#     logger.info(' ** Training complete **')
+#     return train_acc, test_acc, a_i, norm_grad
 
 
-def train_net_moon(net_id, net, global_net, previous_nets, train_dataloader, test_dataloader, epochs, lr, args_optimizer, mu, temperature, args,
-                      round, device="cpu"):
+# def train_net_moon(net_id, net, global_net, previous_nets, train_dataloader, test_dataloader, epochs, lr, args_optimizer, mu, temperature, args,
+#                       round, device="cpu"):
 
-    logger.info('Training network %s' % str(net_id))
+#     logger.info('Training network %s' % str(net_id))
 
-    train_acc = compute_accuracy(net, train_dataloader, moon_model=True, device=device)
-    test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, moon_model=True, device=device)
+#     train_acc = compute_accuracy(net, train_dataloader, moon_model=True, device=device)
+#     test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, moon_model=True, device=device)
 
-    logger.info('>> Pre-Training Training accuracy: {}'.format(train_acc))
-    logger.info('>> Pre-Training Test accuracy: {}'.format(test_acc))
+#     logger.info('>> Pre-Training Training accuracy: {}'.format(train_acc))
+#     logger.info('>> Pre-Training Test accuracy: {}'.format(test_acc))
 
-    # conloss = ContrastiveLoss(temperature)
+#     # conloss = ContrastiveLoss(temperature)
 
-    if args_optimizer == 'adam':
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg)
-    elif args_optimizer == 'amsgrad':
-        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
-                               amsgrad=True)
-    elif args_optimizer == 'sgd':
-        optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=0.9,
-                              weight_decay=args.reg)
+#     if args_optimizer == 'adam':
+#         optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg)
+#     elif args_optimizer == 'amsgrad':
+#         optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
+#                                amsgrad=True)
+#     elif args_optimizer == 'sgd':
+#         optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=0.9,
+#                               weight_decay=args.reg)
 
-    criterion = nn.CrossEntropyLoss().to(device)
-    # global_net.to(device)
+#     criterion = nn.CrossEntropyLoss().to(device)
+#     # global_net.to(device)
 
-    if args.loss != 'l2norm':
-        for previous_net in previous_nets:
-            previous_net.to(device)
-    global_w = global_net.state_dict()
-    # oppsi_nets = copy.deepcopy(previous_nets)
-    # for net_id, oppsi_net in enumerate(oppsi_nets):
-    #     oppsi_w = oppsi_net.state_dict()
-    #     prev_w = previous_nets[net_id].state_dict()
-    #     for key in oppsi_w:
-    #         oppsi_w[key] = 2*global_w[key] - prev_w[key]
-    #     oppsi_nets.load_state_dict(oppsi_w)
-    cnt = 0
-    cos=torch.nn.CosineSimilarity(dim=-1).to(device)
-    # mu = 0.001
+#     if args.loss != 'l2norm':
+#         for previous_net in previous_nets:
+#             previous_net.to(device)
+#     global_w = global_net.state_dict()
+#     # oppsi_nets = copy.deepcopy(previous_nets)
+#     # for net_id, oppsi_net in enumerate(oppsi_nets):
+#     #     oppsi_w = oppsi_net.state_dict()
+#     #     prev_w = previous_nets[net_id].state_dict()
+#     #     for key in oppsi_w:
+#     #         oppsi_w[key] = 2*global_w[key] - prev_w[key]
+#     #     oppsi_nets.load_state_dict(oppsi_w)
+#     cnt = 0
+#     cos=torch.nn.CosineSimilarity(dim=-1).to(device)
+#     # mu = 0.001
 
-    for epoch in range(epochs):
-        epoch_loss_collector = []
-        epoch_loss1_collector = []
-        epoch_loss2_collector = []
-        for batch_idx, (x, target) in enumerate(train_dataloader):
-            x, target = x.to(device), target.to(device)
-            if target.shape[0] == 1:
-                continue
+#     for epoch in range(epochs):
+#         epoch_loss_collector = []
+#         epoch_loss1_collector = []
+#         epoch_loss2_collector = []
+#         for batch_idx, (x, target) in enumerate(train_dataloader):
+#             x, target = x.to(device), target.to(device)
+#             if target.shape[0] == 1:
+#                 continue
 
-            optimizer.zero_grad()
-            x.requires_grad = True
-            target.requires_grad = False
-            target = target.long()
+#             optimizer.zero_grad()
+#             x.requires_grad = True
+#             target.requires_grad = False
+#             target = target.long()
 
-            _, pro1, out = net(x)
-            _, pro2, _ = global_net(x)
-            if args.loss == 'l2norm':
-                loss2 = mu * torch.mean(torch.norm(pro2-pro1, dim=1))
+#             _, pro1, out = net(x)
+#             _, pro2, _ = global_net(x)
+#             if args.loss == 'l2norm':
+#                 loss2 = mu * torch.mean(torch.norm(pro2-pro1, dim=1))
 
-            elif args.loss == 'only_contrastive' or args.loss == 'contrastive':
-                posi = cos(pro1, pro2)
-                logits = posi.reshape(-1,1)
+#             elif args.loss == 'only_contrastive' or args.loss == 'contrastive':
+#                 posi = cos(pro1, pro2)
+#                 logits = posi.reshape(-1,1)
 
-                for previous_net in previous_nets:
-                    previous_net.to(device)
-                    _, pro3, _ = previous_net(x)
-                    nega = cos(pro1, pro3)
-                    logits = torch.cat((logits, nega.reshape(-1,1)), dim=1)
+#                 for previous_net in previous_nets:
+#                     previous_net.to(device)
+#                     _, pro3, _ = previous_net(x)
+#                     nega = cos(pro1, pro3)
+#                     logits = torch.cat((logits, nega.reshape(-1,1)), dim=1)
 
-                    # previous_net.to('cpu')
+#                     # previous_net.to('cpu')
 
-                logits /= temperature
-                labels = torch.zeros(x.size(0)).to(device).long()
+#                 logits /= temperature
+#                 labels = torch.zeros(x.size(0)).to(device).long()
 
-                # loss = criterion(out, target) + mu * ContraLoss(pro1, pro2, pro3)
+#                 # loss = criterion(out, target) + mu * ContraLoss(pro1, pro2, pro3)
 
-                loss2 = mu * criterion(logits, labels)
+#                 loss2 = mu * criterion(logits, labels)
 
-            if args.loss == 'only_contrastive':
-                loss = loss2
-            else:
-                loss1 = criterion(out, target)
-                loss = loss1 + loss2
+#             if args.loss == 'only_contrastive':
+#                 loss = loss2
+#             else:
+#                 loss1 = criterion(out, target)
+#                 loss = loss1 + loss2
 
-            loss.backward()
-            optimizer.step()
+#             loss.backward()
+#             optimizer.step()
 
-            cnt += 1
-            epoch_loss_collector.append(loss.item())
-            epoch_loss1_collector.append(loss1.item())
-            epoch_loss2_collector.append(loss2.item())
+#             cnt += 1
+#             epoch_loss_collector.append(loss.item())
+#             epoch_loss1_collector.append(loss1.item())
+#             epoch_loss2_collector.append(loss2.item())
 
-        epoch_loss = sum(epoch_loss_collector) / len(epoch_loss_collector)
-        epoch_loss1 = sum(epoch_loss1_collector) / len(epoch_loss1_collector)
-        epoch_loss2 = sum(epoch_loss2_collector) / len(epoch_loss2_collector)
-        logger.info('Epoch: %d Loss: %f Loss1: %f Loss2: %f' % (epoch, epoch_loss, epoch_loss1, epoch_loss2))
+#         epoch_loss = sum(epoch_loss_collector) / len(epoch_loss_collector)
+#         epoch_loss1 = sum(epoch_loss1_collector) / len(epoch_loss1_collector)
+#         epoch_loss2 = sum(epoch_loss2_collector) / len(epoch_loss2_collector)
+#         logger.info('Epoch: %d Loss: %f Loss1: %f Loss2: %f' % (epoch, epoch_loss, epoch_loss1, epoch_loss2))
 
 
-    if args.loss != 'l2norm':
-        for previous_net in previous_nets:
-            previous_net.to('cpu')
-    train_acc = compute_accuracy(net, train_dataloader, moon_model=True, device=device)
-    test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, moon_model=True, device=device)
+#     if args.loss != 'l2norm':
+#         for previous_net in previous_nets:
+#             previous_net.to('cpu')
+#     train_acc = compute_accuracy(net, train_dataloader, moon_model=True, device=device)
+#     test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, moon_model=True, device=device)
 
-    logger.info('>> Training accuracy: %f' % train_acc)
-    logger.info('>> Test accuracy: %f' % test_acc)
-    net.to('cpu')
-    logger.info(' ** Training complete **')
-    return train_acc, test_acc
+#     logger.info('>> Training accuracy: %f' % train_acc)
+#     logger.info('>> Test accuracy: %f' % test_acc)
+#     net.to('cpu')
+#     logger.info(' ** Training complete **')
+#     return train_acc, test_acc
 
 
 def view_image(train_dataloader):
@@ -601,184 +617,184 @@ def local_train_net(nets, selected, args, net_dataidx_map, test_dl = None, devic
     return nets_list
 
 
-def local_train_net_fedprox(nets, selected, global_model, args, net_dataidx_map, test_dl = None, device="cpu"):
-    avg_acc = 0.0
+# def local_train_net_fedprox(nets, selected, global_model, args, net_dataidx_map, test_dl = None, device="cpu"):
+#     avg_acc = 0.0
 
-    for net_id, net in nets.items():
-        if net_id not in selected:
-            continue
-        dataidxs = net_dataidx_map[net_id]
+#     for net_id, net in nets.items():
+#         if net_id not in selected:
+#             continue
+#         dataidxs = net_dataidx_map[net_id]
 
-        logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
-        # move the model to cuda device:
-        net.to(device)
+#         logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
+#         # move the model to cuda device:
+#         net.to(device)
 
-        noise_level = args.noise
-        if net_id == args.n_parties - 1:
-            noise_level = 0
+#         noise_level = args.noise
+#         if net_id == args.n_parties - 1:
+#             noise_level = 0
 
-        if args.noise_type == 'space':
-            train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level, net_id, args.n_parties-1)
-        else:
-            noise_level = args.noise / (args.n_parties - 1) * net_id
-            train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level)
-        train_dl_global, test_dl_global, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32)
-        n_epoch = args.epochs
+#         if args.noise_type == 'space':
+#             train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level, net_id, args.n_parties-1)
+#         else:
+#             noise_level = args.noise / (args.n_parties - 1) * net_id
+#             train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level)
+#         train_dl_global, test_dl_global, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32)
+#         n_epoch = args.epochs
 
-        trainacc, testacc = train_net_fedprox(net_id, net, global_model, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, args.mu, device=device)
-        logger.info("net %d final test acc %f" % (net_id, testacc))
-        avg_acc += testacc
-    avg_acc /= len(selected)
-    if args.alg == 'local_training':
-        logger.info("avg test acc %f" % avg_acc)
+#         trainacc, testacc = train_net_fedprox(net_id, net, global_model, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, args.mu, device=device)
+#         logger.info("net %d final test acc %f" % (net_id, testacc))
+#         avg_acc += testacc
+#     avg_acc /= len(selected)
+#     if args.alg == 'local_training':
+#         logger.info("avg test acc %f" % avg_acc)
 
-    nets_list = list(nets.values())
-    return nets_list
+#     nets_list = list(nets.values())
+#     return nets_list
 
-def local_train_net_scaffold(nets, selected, global_model, c_nets, c_global, args, net_dataidx_map, test_dl = None, device="cpu"):
-    avg_acc = 0.0
+# def local_train_net_scaffold(nets, selected, global_model, c_nets, c_global, args, net_dataidx_map, test_dl = None, device="cpu"):
+#     avg_acc = 0.0
 
-    total_delta = copy.deepcopy(global_model.state_dict())
-    for key in total_delta:
-        total_delta[key] = 0.0
-    c_global.to(device)
-    global_model.to(device)
-    for net_id, net in nets.items():
-        if net_id not in selected:
-            continue
-        dataidxs = net_dataidx_map[net_id]
+#     total_delta = copy.deepcopy(global_model.state_dict())
+#     for key in total_delta:
+#         total_delta[key] = 0.0
+#     c_global.to(device)
+#     global_model.to(device)
+#     for net_id, net in nets.items():
+#         if net_id not in selected:
+#             continue
+#         dataidxs = net_dataidx_map[net_id]
 
-        logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
-        # move the model to cuda device:
-        net.to(device)
+#         logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
+#         # move the model to cuda device:
+#         net.to(device)
 
-        c_nets[net_id].to(device)
+#         c_nets[net_id].to(device)
 
-        noise_level = args.noise
-        if net_id == args.n_parties - 1:
-            noise_level = 0
+#         noise_level = args.noise
+#         if net_id == args.n_parties - 1:
+#             noise_level = 0
 
-        if args.noise_type == 'space':
-            train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level, net_id, args.n_parties-1)
-        else:
-            noise_level = args.noise / (args.n_parties - 1) * net_id
-            train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level)
-        train_dl_global, test_dl_global, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32)
-        n_epoch = args.epochs
-
-
-        trainacc, testacc, c_delta_para = train_net_scaffold(net_id, net, global_model, c_nets[net_id], c_global, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, device=device)
-
-        c_nets[net_id].to('cpu')
-        for key in total_delta:
-            total_delta[key] += c_delta_para[key]
+#         if args.noise_type == 'space':
+#             train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level, net_id, args.n_parties-1)
+#         else:
+#             noise_level = args.noise / (args.n_parties - 1) * net_id
+#             train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level)
+#         train_dl_global, test_dl_global, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32)
+#         n_epoch = args.epochs
 
 
-        logger.info("net %d final test acc %f" % (net_id, testacc))
-        avg_acc += testacc
-    for key in total_delta:
-        total_delta[key] /= args.n_parties
-    c_global_para = c_global.state_dict()
-    for key in c_global_para:
-        if c_global_para[key].type() == 'torch.LongTensor':
-            c_global_para[key] += total_delta[key].type(torch.LongTensor)
-        elif c_global_para[key].type() == 'torch.cuda.LongTensor':
-            c_global_para[key] += total_delta[key].type(torch.cuda.LongTensor)
-        else:
-            #print(c_global_para[key].type())
-            c_global_para[key] += total_delta[key]
-    c_global.load_state_dict(c_global_para)
+#         trainacc, testacc, c_delta_para = train_net_scaffold(net_id, net, global_model, c_nets[net_id], c_global, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, device=device)
 
-    avg_acc /= len(selected)
-    if args.alg == 'local_training':
-        logger.info("avg test acc %f" % avg_acc)
-
-    nets_list = list(nets.values())
-    return nets_list
-
-def local_train_net_fednova(nets, selected, global_model, args, net_dataidx_map, test_dl = None, device="cpu"):
-    avg_acc = 0.0
-
-    a_list = []
-    d_list = []
-    n_list = []
-    global_model.to(device)
-    for net_id, net in nets.items():
-        if net_id not in selected:
-            continue
-        dataidxs = net_dataidx_map[net_id]
-
-        logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
-        # move the model to cuda device:
-        net.to(device)
-
-        noise_level = args.noise
-        if net_id == args.n_parties - 1:
-            noise_level = 0
-
-        if args.noise_type == 'space':
-            train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level, net_id, args.n_parties-1)
-        else:
-            noise_level = args.noise / (args.n_parties - 1) * net_id
-            train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level)
-        train_dl_global, test_dl_global, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32)
-        n_epoch = args.epochs
+#         c_nets[net_id].to('cpu')
+#         for key in total_delta:
+#             total_delta[key] += c_delta_para[key]
 
 
-        trainacc, testacc, a_i, d_i = train_net_fednova(net_id, net, global_model, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, device=device)
+#         logger.info("net %d final test acc %f" % (net_id, testacc))
+#         avg_acc += testacc
+#     for key in total_delta:
+#         total_delta[key] /= args.n_parties
+#     c_global_para = c_global.state_dict()
+#     for key in c_global_para:
+#         if c_global_para[key].type() == 'torch.LongTensor':
+#             c_global_para[key] += total_delta[key].type(torch.LongTensor)
+#         elif c_global_para[key].type() == 'torch.cuda.LongTensor':
+#             c_global_para[key] += total_delta[key].type(torch.cuda.LongTensor)
+#         else:
+#             #print(c_global_para[key].type())
+#             c_global_para[key] += total_delta[key]
+#     c_global.load_state_dict(c_global_para)
 
-        a_list.append(a_i)
-        d_list.append(d_i)
-        n_i = len(train_dl_local.dataset)
-        n_list.append(n_i)
-        logger.info("net %d final test acc %f" % (net_id, testacc))
-        avg_acc += testacc
+#     avg_acc /= len(selected)
+#     if args.alg == 'local_training':
+#         logger.info("avg test acc %f" % avg_acc)
+
+#     nets_list = list(nets.values())
+#     return nets_list
+
+# def local_train_net_fednova(nets, selected, global_model, args, net_dataidx_map, test_dl = None, device="cpu"):
+#     avg_acc = 0.0
+
+#     a_list = []
+#     d_list = []
+#     n_list = []
+#     global_model.to(device)
+#     for net_id, net in nets.items():
+#         if net_id not in selected:
+#             continue
+#         dataidxs = net_dataidx_map[net_id]
+
+#         logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
+#         # move the model to cuda device:
+#         net.to(device)
+
+#         noise_level = args.noise
+#         if net_id == args.n_parties - 1:
+#             noise_level = 0
+
+#         if args.noise_type == 'space':
+#             train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level, net_id, args.n_parties-1)
+#         else:
+#             noise_level = args.noise / (args.n_parties - 1) * net_id
+#             train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level)
+#         train_dl_global, test_dl_global, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32)
+#         n_epoch = args.epochs
 
 
-    avg_acc /= len(selected)
-    if args.alg == 'local_training':
-        logger.info("avg test acc %f" % avg_acc)
+#         trainacc, testacc, a_i, d_i = train_net_fednova(net_id, net, global_model, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, device=device)
 
-    nets_list = list(nets.values())
-    return nets_list, a_list, d_list, n_list
+#         a_list.append(a_i)
+#         d_list.append(d_i)
+#         n_i = len(train_dl_local.dataset)
+#         n_list.append(n_i)
+#         logger.info("net %d final test acc %f" % (net_id, testacc))
+#         avg_acc += testacc
 
-def local_train_net_moon(nets, selected, args, net_dataidx_map, test_dl=None, global_model = None, prev_model_pool = None, round=None, device="cpu"):
-    avg_acc = 0.0
-    global_model.to(device)
-    for net_id, net in nets.items():
-        if net_id not in selected:
-            continue
-        dataidxs = net_dataidx_map[net_id]
 
-        logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
-        net.to(device)
+#     avg_acc /= len(selected)
+#     if args.alg == 'local_training':
+#         logger.info("avg test acc %f" % avg_acc)
 
-        noise_level = args.noise
-        if net_id == args.n_parties - 1:
-            noise_level = 0
+#     nets_list = list(nets.values())
+#     return nets_list, a_list, d_list, n_list
 
-        if args.noise_type == 'space':
-            train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level, net_id, args.n_parties-1)
-        else:
-            noise_level = args.noise / (args.n_parties - 1) * net_id
-            train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level)
-        train_dl_global, test_dl_global, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32)
-        n_epoch = args.epochs
+# def local_train_net_moon(nets, selected, args, net_dataidx_map, test_dl=None, global_model = None, prev_model_pool = None, round=None, device="cpu"):
+#     avg_acc = 0.0
+#     global_model.to(device)
+#     for net_id, net in nets.items():
+#         if net_id not in selected:
+#             continue
+#         dataidxs = net_dataidx_map[net_id]
 
-        prev_models=[]
-        for i in range(len(prev_model_pool)):
-            prev_models.append(prev_model_pool[i][net_id])
-        trainacc, testacc = train_net_moon(net_id, net, global_model, prev_models, train_dl_local, test_dl, n_epoch, args.lr,
-                                              args.optimizer, args.mu, args.temperature, args, round, device=device)
-        logger.info("net %d final test acc %f" % (net_id, testacc))
-        avg_acc += testacc
+#         logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
+#         net.to(device)
 
-    avg_acc /= len(selected)
-    if args.alg == 'local_training':
-        logger.info("avg test acc %f" % avg_acc)
-    global_model.to('cpu')
-    nets_list = list(nets.values())
-    return nets_list
+#         noise_level = args.noise
+#         if net_id == args.n_parties - 1:
+#             noise_level = 0
+
+#         if args.noise_type == 'space':
+#             train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level, net_id, args.n_parties-1)
+#         else:
+#             noise_level = args.noise / (args.n_parties - 1) * net_id
+#             train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level)
+#         train_dl_global, test_dl_global, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32)
+#         n_epoch = args.epochs
+
+#         prev_models=[]
+#         for i in range(len(prev_model_pool)):
+#             prev_models.append(prev_model_pool[i][net_id])
+#         trainacc, testacc = train_net_moon(net_id, net, global_model, prev_models, train_dl_local, test_dl, n_epoch, args.lr,
+#                                               args.optimizer, args.mu, args.temperature, args, round, device=device)
+#         logger.info("net %d final test acc %f" % (net_id, testacc))
+#         avg_acc += testacc
+
+#     avg_acc /= len(selected)
+#     if args.alg == 'local_training':
+#         logger.info("avg test acc %f" % avg_acc)
+#     global_model.to('cpu')
+#     nets_list = list(nets.values())
+#     return nets_list
 
 
 
@@ -828,9 +844,13 @@ if __name__ == '__main__':
     torch.manual_seed(seed)
     random.seed(seed)
     logger.info("Partitioning data")
+    
     X_train, y_train, X_test, y_test, net_dataidx_map, traindata_cls_counts = partition_data(
         args.dataset, args.datadir, args.logdir, args.partition, args.n_parties, beta=args.beta)
-
+    
+    # X_train, y_train, X_test, y_test, net_dataidx_map, traindata_cls_counts = partition_liver_data(
+    #     args.dataset, args.datadir, args.logdir, args.partition, args.n_parties, beta=args.beta)
+    
     n_classes = len(np.unique(y_train))
 
     train_dl_global, test_dl_global, train_ds_global, test_ds_global = get_dataloader(args.dataset,
@@ -847,6 +867,8 @@ if __name__ == '__main__':
 
     train_all_in_list = []
     test_all_in_list = []
+    hospital_list = ["D", "F", "G", "N"]
+
     if args.noise > 0:
         for party_id in range(args.n_parties):
             dataidxs = net_dataidx_map[party_id]

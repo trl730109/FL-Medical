@@ -23,6 +23,7 @@ logger.setLevel(logging.INFO)
 
 IMG_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm', '.tif', '.tiff', '.webp')
 
+
 def mkdirs(dirpath):
     try:
         os.makedirs(dirpath)

@@ -22,6 +22,8 @@ from utils import *
 from vggmodel import *
 from resnetcifar import *
 from pathlib import Path
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
 
 HOSPITAL_NAMES = ["D", "F", "G", "N"]
 
@@ -60,6 +62,8 @@ def get_args():
     parser.add_argument('--sample', type=float, default=1, help='Sample ratio for each communication round')
     
     parser.add_argument('--model_weight_path', type=str, default="/mnt/raid/tangzichen/Liver/resnet50-pre.pth", help='Pretrained model weight path')
+    parser.add_argument('--root_dir', type=str, default="/mnt/raid/tangzichen/Liver/", help='Root directory for the liver folder.')
+
     args = parser.parse_args()
     return args
 
@@ -139,15 +143,28 @@ def init_nets(net_configs, dropout_p, n_parties, args):
                         net = ModerateCNN(output_dim=2)
                 elif args.model == "resnet":
                     net = ResNet50_cifar10()
-                elif args.dataset == 'liver' and args.model == 'resnet':
-                    net = resnet_liver.resnet50()
+                elif args.dataset == 'liver' and args.model.startswith('resnet'):
+                    if args.model == "resnet18":
+                        net = resnet_liver.resnet18()
+                    elif args.model == 'resnet34':
+                        net = resnet_liver.resnet34()
+                    elif args.model == 'resnet50':
+                        net = resnet_liver.resnet50()
+                    elif args.model == 'resnet101':
+                        net = resnet_liver.resnet101()
+                    elif args.model == 'resnet152':
+                        net = resnet_liver.resnet152()
+                    else:
+                        print("Models for liver dataset not supported yet")
+                        exit(1)
+                        
                     if args.model_weight_path != None:
                         missing_keys, unexpected_keys = net.load_state_dict(torch.load(args.model_weight_path), strict=False)
-                    # 冻结部分权重
-                    for param in net.parameters():  #对于模型的每个权重，使其不进行反向传播，即固定参数
-                        param.requires_grad = False
-                    for param in net.fc.parameters(): # 但是参数全部固定了，也没法进行学习，所以我们不固定最后一层，即全连接层fc
-                        param.requires_grad = True
+                    # # 冻结部分权重
+                    # for param in net.parameters():  #对于模型的每个权重，使其不进行反向传播，即固定参数
+                    #     param.requires_grad = False
+                    # for param in net.fc.parameters(): # 但是参数全部固定了，也没法进行学习，所以我们不固定最后一层，即全连接层fc
+                    #     param.requires_grad = True
 
                     # change fc layer structure
                     in_channel = net.fc.in_features # 输入特征矩阵的深度。net.fc是所定义网络的全连接层
@@ -168,79 +185,92 @@ def init_nets(net_configs, dropout_p, n_parties, args):
     return nets, model_meta_data, layer_type
 
 
-def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args_optimizer, device="cpu"):
+def train_net(net_id, net, train_dataloader, test_dataloader, epochs, lr, args_optimizer, device="cpu", ds_size=[], args=None, results_save_folder=''):
     # logger.info('Training network %s' % str(net_id))
-    logger.info(f'Training network {str(net_id)}: {HOSPITAL_NAMES[net_id]}')
-    train_acc = compute_accuracy(net, train_dataloader, device=device)
-    test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
+    logger.info(f' ***  Training network {str(net_id)}: {HOSPITAL_NAMES[net_id]}  ***  ')
+    
+    # train_acc = compute_accuracy(net, train_dataloader, device=device)
+    # test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
 
-    logger.info('>> Pre-Training Training accuracy: {}'.format(train_acc))
-    logger.info('>> Pre-Training Test accuracy: {}'.format(test_acc))
+    # logger.info('>> Pre-Training Training accuracy: {}'.format(train_acc))
+    # logger.info('>> Pre-Training Test accuracy: {}'.format(test_acc))
 
-    # if args_optimizer == 'adam':
-    #     optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg)
-    # elif args_optimizer == 'amsgrad':
-    #     optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
-    #                            amsgrad=True)
-    # elif args_optimizer == 'sgd':
-    #     optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=args.rho, weight_decay=args.reg)
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr)  #大概率比SGD收敛的好！！！！！！
+    if args_optimizer == 'Adam':
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr)  #大概率比SGD收敛的好！！！！！！
+    elif args_optimizer == 'amsgrad':
+        optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, weight_decay=args.reg,
+                               amsgrad=True)
+    elif args_optimizer == 'sgd':
+        optimizer = optim.SGD(filter(lambda p: p.requires_grad, net.parameters()), lr=lr, momentum=args.rho, weight_decay=args.reg)
+    
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
     criterion = nn.CrossEntropyLoss().to(device)
-    cnt = 0
-    if type(train_dataloader) == type([1]):
-        pass
-    else:
-        train_dataloader = [train_dataloader]
-
-    #writer = SummaryWriter()
 
     for epoch in range(epochs):
-        epoch_loss_collector = []
-        for tmp in train_dataloader:
-            for batch_idx, (x, target) in enumerate(tmp):
-                x, target = x.to(device), target.to(device)
+        net.train()
+        train_loss = 0.0
+        train_acc = 0.
+        # epoch_acc_collector = []
+        for step, data in enumerate(train_dataloader,start=0):
+            # print(data)
+            images, labels = data
+            optimizer.zero_grad()
+            logits = net(images.to(device))
+            loss = criterion(logits, labels.to(device))
+            pred = torch.max(logits, 1)[1]
 
-                optimizer.zero_grad()
-                x.requires_grad = True
-                target.requires_grad = False
-                target = target.long()
+            # print(pred)------
+            train_correct = torch.max(logits, dim=1)[1]
+            # train_correct = (pred == labels).sum()
+            train_acc += (train_correct == labels.to(device)).sum().item()
+            # train_acc += train_correct.item()
+            loss.backward()
+            optimizer.step()
+            # print statistics
+            train_loss += loss.item()
+            # print train process
+            rate = (step+1)/len(train_dataloader)
+            a = "*" * int(rate * 50)
+            b = "." * int((1 - rate) * 50)
+            print("\rtrain loss: {:^3.0f}%[{}->{}]{:.4f}".format(int(rate*100), a, b, loss), end="")
+        
+        # epoch_loss = sum(epoch_loss_collector) / len(epoch_loss_collector)
+        logger.info('Local epoch: %d Loss: %f Acc: %f' % (epoch, train_loss/ds_size[0]*100, train_acc/ds_size[0]*100))
+        # strr=str(epoch)+"  "+str(train_loss/ds[0]*100)+'    '+str(train_acc/dataset_size*100)
+        # with open(Path(os.path.join(result_save_folder, 'train_loss.txt')).as_posix(), 'a') as f:
+        #     f.write(str(strr) + '\n')
 
-                out = net(x)
-                loss = criterion(out, target)
+    # train_acc = compute_accuracy(net, train_dataloader, device=device)
+    # test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
+    net.eval() # 控制训练过程中的Batch normalization
+    eval_acc = 0.0  # accumulate accurate number / epoch
+    eval_loss = 0.0
+    with torch.no_grad():
+        for val_data in test_dataloader:
+            val_images, val_labels = val_data
+            outputs = net(val_images.to(device))  # eval model only have last output layer
+            loss = criterion(outputs, val_labels.to(device))
+            eval_loss += loss.item()
 
-                loss.backward()
-                optimizer.step()
+            predict_y = torch.max(outputs, dim=1)[1]
+            eval_acc += (predict_y == val_labels.to(device)).sum().item()
+        val_accurate = eval_acc / ds_size[1]
+        # if val_accurate >= best_acc:
+        #     best_acc = val_accurate
+        #     torch.save(net.state_dict(), Path(os.path.join(results_save_folder, 'best_resNet50.pth')).as_posix())
+        # print('[Local epoch %d] val_loss: %.3f  val_accuracy: %.3f' % (epoch + 1, eval_loss / step, val_accurate))
 
-                cnt += 1
-                epoch_loss_collector.append(loss.item())
+        # save val results
+        with open(Path(os.path.join(results_save_folder, 'val_accurate.txt')).as_posix(), 'a') as f:
+            f.write(str(val_accurate) + '\n')
+        with open(Path(os.path.join(results_save_folder, 'val_loss.txt')).as_posix(), 'a') as f:
+            f.write(str(eval_loss / len(test_dataloader)) + '\n')
 
-        epoch_loss = sum(epoch_loss_collector) / len(epoch_loss_collector)
-        logger.info('Epoch: %d Loss: %f' % (epoch, epoch_loss))
-
-        #train_acc = compute_accuracy(net, train_dataloader, device=device)
-        #test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
-
-        #writer.add_scalar('Accuracy/train', train_acc, epoch)
-        #writer.add_scalar('Accuracy/test', test_acc, epoch)
-
-        # if epoch % 10 == 0:
-        #     logger.info('Epoch: %d Loss: %f' % (epoch, epoch_loss))
-        #     train_acc = compute_accuracy(net, train_dataloader, device=device)
-        #     test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
-        #
-        #     logger.info('>> Training accuracy: %f' % train_acc)
-        #     logger.info('>> Test accuracy: %f' % test_acc)
-
-    train_acc = compute_accuracy(net, train_dataloader, device=device)
-    test_acc, conf_matrix = compute_accuracy(net, test_dataloader, get_confusion_matrix=True, device=device)
-
-    logger.info('>> Training accuracy: %f' % train_acc)
-    logger.info('>> Test accuracy: %f' % test_acc)
-
+    # with open(Path(os.path.join(result_save_folder, 'best_acc.txt')).as_posix(), 'a') as f:
+    #     f.write(str(best_acc) + '\n')
     net.to('cpu')
     logger.info(' ** Training complete **')
-    return train_acc, test_acc
+    return train_acc/ds_size[0]*100, val_accurate
 
 def view_image(train_dataloader):
     for (x, target) in train_dataloader:
@@ -248,41 +278,47 @@ def view_image(train_dataloader):
         print(x.shape)
         exit(0)
 
-def local_train_net(nets, selected, args, test_dl = None, device="cpu"):
+def local_train_net(nets, selected, args, results_save_folder, test_dl = None, device="cpu"):
     avg_acc = 0.0
-    hospital_names = ["D","F","G","N"]
+    train_ds_size_list = []
     for net_id, net in nets.items():
         # if net_id not in selected:
         #     continue
-
+        image_dir_name = os.path.join(args.root_dir, f'Images_AP_all_{HOSPITAL_NAMES[net_id]}')
+    
+        # image_path = Path(os.path.join(root_dir, image_dir_name)).as_posix()
+        # assert os.path.exists(image_path), "{} path does not exist.".format(image_path)
+        # results_save_folder = os.path.join(args.results_save_dir, f'results_{image_dir_name}')
+        client_results_save_folder = os.path.join(results_save_folder, f'results_Images_AP_all_{HOSPITAL_NAMES[net_id]}')
+        if not os.path.exists(client_results_save_folder):
+            os.makedirs(client_results_save_folder)
         # logger.info("Training network %s. n_training: %d" % (str(net_id), len(dataidxs)))
         # move the model to cuda device:
         net.to(device)
-
-        # if args.noise_type == 'space':
-        #     train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level, net_id, args.n_parties-1)
-        # else:
-        #     noise_level = args.noise / (args.n_parties - 1) * net_id
-        #     train_dl_local, test_dl_local, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32, dataidxs, noise_level)
-        # train_dl_global, test_dl_global, _, _ = get_dataloader(args.dataset, args.datadir, args.batch_size, 32)
-        train_dl_local, test_dl_local, train_ds_local, _ = get_liver_dataloader(args.batch_size, 32, hospital_name = hospital_names[net_id])
+        
+        train_dl_local, test_dl_local, train_ds_local, test_ds_local = get_liver_dataloader(args.batch_size, 32, root_dir=args.root_dir, hospital_name = HOSPITAL_NAMES[net_id])
+        train_ds_size_list.append(len(train_ds_local))
         logger.info("Training network %s. n_training: %d" % (str(net_id), len(train_ds_local)))
         n_epoch = args.epochs
-
-
-        trainacc, testacc = train_net(net_id, net, train_dl_local, test_dl, n_epoch, args.lr, args.optimizer, device=device)
+        
+        print(f' ***  Training network {str(net_id)}: {HOSPITAL_NAMES[net_id]}  ***  ')
+        trainacc, testacc = train_net(net_id, net, train_dl_local, test_dl_local, n_epoch, args.lr, args.optimizer, 
+                                      device=device, ds_size=[len(train_ds_local), len(test_ds_local)], results_save_folder=client_results_save_folder)
+        print(f' *** Training finished *** ')
+        
         logger.info("net %d final test acc %f" % (net_id, testacc))
+        print(f"net {net_id} {HOSPITAL_NAMES[net_id]} final test acc: {testacc}")
         avg_acc += testacc
         # saving the trained models here
         # save_model(net, net_id, args)
         # else:
         #     load_model(net, net_id, device=device)
     avg_acc /= len(selected)
-    if args.alg == 'local_training':
-        logger.info("avg test acc %f" % avg_acc)
+    # if args.alg == 'local_training':
+    #     logger.info("avg test acc %f" % avg_acc)
 
     nets_list = list(nets.values())
-    return nets_list
+    return nets_list, train_ds_size_list
 
 def get_partition_dict(dataset, partition, n_parties, init_seed=0, datadir='./data', logdir='./logs', beta=0.5):
     seed = init_seed
@@ -310,11 +346,10 @@ if __name__ == '__main__':
         logging.root.removeHandler(handler)
 
     if args.log_file_name is None:
-        args.log_file_name = 'experiment_log-%s' % (datetime.datetime.now().strftime("%Y-%m-%d-%H:%M-%S"))
+        args.log_file_name = 'Log-%s' % (datetime.datetime.now().strftime("%m-%d-%H-%M"))
     log_path=args.log_file_name+'.log'
     logging.basicConfig(
         filename=os.path.join(args.logdir, log_path),
-        # filename='/home/qinbin/test.log',
         format='%(asctime)s %(levelname)-8s %(message)s',
         datefmt='%m-%d %H:%M', level=logging.DEBUG, filemode='w')
 
@@ -327,34 +362,26 @@ if __name__ == '__main__':
     np.random.seed(seed)
     torch.manual_seed(seed)
     random.seed(seed)
-    logger.info("Partitioning data")
-    X_train, y_train, X_test, y_test, net_dataidx_map, traindata_cls_counts = partition_data(
-        args.dataset, args.datadir, args.logdir, args.partition, args.n_parties, beta=args.beta)
 
-    n_classes = len(np.unique(y_train))
+    exp_time = "Exp-" + datetime.datetime.now().strftime("%m-%d-%H-%M")
+    results_save_dir = os.path.join(os.getcwd(), 'results', exp_time)
+    global_results_save_folder = os.path.join(results_save_dir, 'Global_results')
+    if not os.path.exists(global_results_save_folder):
+        os.makedirs(global_results_save_folder)
+            
+    n_classes = 2
 
-    train_dl_global, test_dl_global, train_ds_global, test_ds_global = get_dataloader(args.dataset,
-                                                                                        args.datadir,
-                                                                                        args.batch_size,
-                                                                                        32)
+    # train_dl_global, test_dl_global, train_ds_global, test_ds_global = get_dataloader(args.dataset,
+    #                                                                                     args.datadir,
+    #                                                                                     args.batch_size,
+    #                                                                                     32)
+    train_dl_global, test_dl_global, train_ds_global, test_ds_global = get_liver_dataloader(args.batch_size, 32, root_dir = args.root_dir, hospital_name = None)
 
-    print("len train_dl_global:", len(train_ds_global))
-
-
-
-    data_size = len(test_ds_global)
-
-    # test_dl = data.DataLoader(dataset=test_ds_global, batch_size=32, shuffle=False)
-
-    train_all_in_list = []
-    test_all_in_list = []
-
-    hospital_names = ["D","F","G","N"]
 
     if args.alg == 'fedavg':
         logger.info("Initializing nets")
         # Initialize nets for each client
-        nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.dropout_p, len(hospital_names), args)
+        nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.dropout_p, len(HOSPITAL_NAMES), args)
         # Initialize global server net
         global_models, global_model_meta_data, global_layer_type = init_nets(args.net_config, 0, 1, args)
         global_model = global_models[0]
@@ -364,9 +391,10 @@ if __name__ == '__main__':
             for net_id, net in nets.items():
                 net.load_state_dict(global_para)
 
+        best_acc = 0.0
         for round in range(args.comm_round):
             logger.info("in comm round:" + str(round))
-
+            print(f' *** Round {str(round)} ***')
             selected = np.arange(args.n_parties)
             global_para = global_model.state_dict()
             if round == 0:
@@ -377,12 +405,12 @@ if __name__ == '__main__':
                 for idx in selected:
                     nets[idx].load_state_dict(global_para)
 
-            local_train_net(nets, selected, args, net_dataidx_map, test_dl = test_dl_global, device=device)
-            # local_train_net(nets, args, net_dataidx_map, local_split=False, device=device)
+            _, train_ds_size_list = local_train_net(nets, selected, args, results_save_folder=results_save_dir, test_dl = None, device=device)
 
             # update global model
-            total_data_points = sum([len(net_dataidx_map[r]) for r in selected])
-            fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in selected]
+            total_data_points = sum(train_ds_size_list)
+            fed_avg_freqs = [train_ds_size_list[r] / total_data_points for r in selected]
+            # fed_avg_freqs = [len(net_dataidx_map[r]) / total_data_points for r in selected]
 
             for idx in range(len(selected)):
                 net_para = nets[selected[idx]].cpu().state_dict()
@@ -393,31 +421,35 @@ if __name__ == '__main__':
                     for key in net_para:
                         global_para[key] += net_para[key] * fed_avg_freqs[idx]
             global_model.load_state_dict(global_para)
-
-            logger.info('global n_training: %d' % len(train_dl_global))
-            logger.info('global n_test: %d' % len(test_dl_global))
-
             global_model.to(device)
             train_acc = compute_accuracy(global_model, train_dl_global, device=device)
             test_acc, conf_matrix = compute_accuracy(global_model, test_dl_global, get_confusion_matrix=True, device=device)
 
-
             logger.info('>> Global Model Train accuracy: %f' % train_acc)
             logger.info('>> Global Model Test accuracy: %f' % test_acc)
+            print('>> Global Model Train accuracy: %f' % train_acc)
+            print('>> Global Model Test accuracy: %f' % test_acc)
+            
+            if test_acc >= best_acc:
+                best_acc = test_acc
+                torch.save(global_model.state_dict(), Path(os.path.join(global_results_save_folder, 'best_global_resNet50.pth')).as_posix())
+            # save val results
+            with open(Path(os.path.join(global_results_save_folder, 'val_accurate.txt')).as_posix(), 'a') as f:
+                f.write(str(test_acc) + '\n')
 
 
-    elif args.alg == 'local_training':
-        logger.info("Initializing nets")
-        nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.dropout_p, args.n_parties, args)
-        arr = np.arange(args.n_parties)
-        local_train_net(nets, arr, args, net_dataidx_map, test_dl = test_dl_global, device=device)
+    # elif args.alg == 'local_training':
+    #     logger.info("Initializing nets")
+    #     nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.dropout_p, args.n_parties, args)
+    #     arr = np.arange(args.n_parties)
+    #     local_train_net(nets, arr, args, net_dataidx_map, test_dl = test_dl_global, device=device)
 
-    elif args.alg == 'all_in':
-        nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.dropout_p, 1, args)
-        n_epoch = args.epochs
-        nets[0].to(device)
-        trainacc, testacc = train_net(0, nets[0], train_dl_global, test_dl_global, n_epoch, args.lr, args.optimizer, device=device)
+    # elif args.alg == 'all_in':
+    #     nets, local_model_meta_data, layer_type = init_nets(args.net_config, args.dropout_p, 1, args)
+    #     n_epoch = args.epochs
+    #     nets[0].to(device)
+    #     trainacc, testacc = train_net(0, nets[0], train_dl_global, test_dl_global, n_epoch, args.lr, args.optimizer, device=device)
 
-        logger.info("All in test acc: %f" % testacc)
+    #     logger.info("All in test acc: %f" % testacc)
 
    

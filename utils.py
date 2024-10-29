@@ -10,11 +10,12 @@ import random
 from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
 import copy
-
+from torch.utils.data import Dataset, DataLoader
 from model import *
 from datasets import MNIST_truncated, CIFAR10_truncated, CIFAR100_truncated, ImageFolder_custom, SVHN_custom, FashionMNIST_truncated, CustomTensorDataset, CelebA_custom, FEMNIST, Generated, genData
 from math import sqrt
 from pathlib import Path
+from PIL import Image
 import torch.nn as nn
 
 import torch.optim as optim
@@ -680,7 +681,7 @@ class MyDataset(Dataset):
         # dataloader到时候会在这里取数据,必须是list类型
         self.imgs = [Path(os.path.join(self.root_dir, img)).as_posix() for img in list(self.imgs_labels_dict.keys())]  # 一个[包含图片路径]的list
         self.labels = [label for label in list(self.imgs_labels_dict.values())]  # [图像对应的labels] 的list
-        print(self.imgs)
+        # print(self.imgs)
         # 相关预处理的初始化
         # 把shape=(H,W,C)的像素值范围为[0, 255]的PIL.Image或者numpy.ndarray数据
         # 转换成shape=(C,H,W)的像素数据，并且被归一化到[0.0, 1.0]的torch.FloatTensor类型。
@@ -711,7 +712,7 @@ class MyDataset(Dataset):
         return imgs_labels_dict
 
 
-def get_liver_dataloader(train_bs, test_bs, hospital_name = None):
+def get_liver_dataloader(train_bs, test_bs, root_dir, hospital_name = None):
     data_transform = {
         "train": transforms.Compose([transforms.Resize(224),
                                      # transforms.CenterCrop(224),
@@ -722,23 +723,26 @@ def get_liver_dataloader(train_bs, test_bs, hospital_name = None):
                                    # transforms.CenterCrop(224),  # 再中心裁减一个224*224大小的图片
                                    transforms.ToTensor(),
                                    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])])}  # [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
-    if hospital_name != None:
-        ann_txt_dir_train = '/mnt/raid/tangzichen/Liver/train_AP_'+hospital_name+'.txt'
-        ann_txt_dir_val = '/mnt/raid/tangzichen/Liver/val_AP_D.txt'+hospital_name+'.txt'
-        # root_dir = os.getcwd()
-        root_dir = "/mnt/raid/tangzichen/Liver/"
-        image_dir_name = 'Images_AP_all_'+hospital_name
+    if hospital_name is not None:
+        ann_txt_dir_train = os.path.join(root_dir, f'train_AP_{hospital_name}.txt')
+        ann_txt_dir_val = os.path.join(root_dir, f'val_AP_{hospital_name}.txt')
+    else:
+        ann_txt_dir_train = os.path.join(root_dir, 'train_AP_All.txt')
+        ann_txt_dir_val = os.path.join(root_dir, 'val_AP_All.txt')
+    # root_dir = "/mnt/raid/tangzichen/Liver/"
     
     train_dataset = MyDataset(root_dir = root_dir, ann_txt_dir = ann_txt_dir_train, transform=data_transform["train"])
     train_num = len(train_dataset)
-    print('train_num:',train_num)
+    # print('train_num:',train_num)
     train_loader = torch.utils.data.DataLoader(train_dataset,batch_size=train_bs, shuffle=True, num_workers=8) #dataloader的标准输入
 
     validate_dataset = MyDataset(root_dir = root_dir, ann_txt_dir = ann_txt_dir_val, transform=data_transform["val"])
     val_num = len(validate_dataset)
     validate_loader = torch.utils.data.DataLoader(validate_dataset,batch_size=test_bs, shuffle=False,num_workers=8)
-    print("using {} images for training, {} images for validation.".format(train_num, val_num))
-    
+    if hospital_name != None:
+        print(f"Hospital {hospital_name} using {train_num} images for training, {val_num} images for validation.")
+    else:
+        print(f"Global dataset: {train_num} images for training, {val_num} images for validation.")
     # train_ds = dl_obj(datadir, dataidxs=dataidxs, train=True, transform=transform_train, download=True)
     # test_ds = dl_obj(datadir, train=False, transform=transform_test, download=True)
 

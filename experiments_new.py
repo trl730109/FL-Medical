@@ -160,11 +160,11 @@ def init_nets(net_configs, dropout_p, n_parties, args):
                         
                     if args.model_weight_path != None:
                         missing_keys, unexpected_keys = net.load_state_dict(torch.load(args.model_weight_path), strict=False)
-                    # # 冻结部分权重
-                    # for param in net.parameters():  #对于模型的每个权重，使其不进行反向传播，即固定参数
-                    #     param.requires_grad = False
-                    # for param in net.fc.parameters(): # 但是参数全部固定了，也没法进行学习，所以我们不固定最后一层，即全连接层fc
-                    #     param.requires_grad = True
+                    # 冻结部分权重
+                    for param in net.parameters():  #对于模型的每个权重，使其不进行反向传播，即固定参数
+                        param.requires_grad = False
+                    for param in net.fc.parameters(): # 但是参数全部固定了，也没法进行学习，所以我们不固定最后一层，即全连接层fc
+                        param.requires_grad = True
 
                     # change fc layer structure
                     in_channel = net.fc.in_features # 输入特征矩阵的深度。net.fc是所定义网络的全连接层
